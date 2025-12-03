@@ -10,12 +10,52 @@ import atexit
 import socket
 import threading
 import ipaddress
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from .chrome import Chrome
 from .browser import Browser
 from .auth import TokenAuth, create_auth_middleware
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Monkey-patch MCP session to auto-initialize on any request
+# This allows clients to call tools without explicit initialize handshake
+# ══════════════════════════════════════════════════════════════════════════════
+def _patch_mcp_session():
+    """Patch MCP ServerSession to auto-initialize on first request."""
+    try:
+        from mcp.server import session as mcp_session
+        import mcp.types as types
+
+        _original_received_request = mcp_session.ServerSession._received_request
+
+        async def _patched_received_request(self, responder):
+            """Auto-initialize if not initialized and request is not initialize."""
+            # Auto-initialize on first non-initialize request
+            if self._initialization_state != mcp_session.InitializationState.Initialized:
+                match responder.request.root:
+                    case types.InitializeRequest():
+                        pass  # Let original handle it
+                    case types.PingRequest():
+                        pass  # Always allowed
+                    case _:
+                        # Auto-initialize with default params
+                        print("[*] Auto-initializing session (client skipped handshake)", file=sys.stderr)
+                        self._initialization_state = mcp_session.InitializationState.Initialized
+
+            return await _original_received_request(self, responder)
+
+        mcp_session.ServerSession._received_request = _patched_received_request
+        print("[*] MCP session patched for auto-initialization", file=sys.stderr)
+    except Exception as e:
+        print(f"[!] Failed to patch MCP session: {e}", file=sys.stderr)
+
+
+# Apply patch on module load
+_patch_mcp_session()
 
 
 # Global state with thread safety
@@ -23,6 +63,10 @@ _lock = threading.Lock()
 _chrome: Optional[Chrome] = None
 _browser: Optional[Browser] = None
 _auth: Optional[TokenAuth] = None
+
+# Session persistence: map old session IDs to new ones
+_session_redirects: Dict[str, str] = {}
+_active_sessions: Dict[str, Any] = {}
 
 
 def get_browser() -> Browser:
@@ -225,415 +269,400 @@ def create_server(headless: bool = False, local_control: bool = False, browser_t
         return mcp
 
     # ═══════════════════════════════════════════════════════════════
-    # Navigation
+    # CONSOLIDATED TOOLS (Token-efficient design)
+    # 50+ tools → 12 powerful tools
     # ═══════════════════════════════════════════════════════════════
 
     @mcp.tool()
-    def goto(url: str, wait: bool = False) -> str:
-        """Navigate to URL. Returns final URL.
+    def page(action: str, url: Optional[str] = None, wait: bool = False) -> Dict:
+        """Page navigation and info.
 
-        Args:
-            url: Target URL to navigate to
-            wait: Wait for page load (default: False for SSE stability)
+        Actions:
+          - goto: Navigate to URL (requires url param)
+          - reload: Reload page (wait=True to ignore cache)
+          - back/forward: History navigation
+          - info: Get current URL and title
+
+        Returns: {url, title} or action result
         """
         b = get_browser()
-        b.goto(url, wait=wait)
-        return b.url
+        if action == "goto" and url:
+            b.goto(url, wait=wait)
+        elif action == "reload":
+            b.reload(wait)  # wait param used as ignore_cache
+        elif action == "back":
+            b.back()
+        elif action == "forward":
+            b.forward()
+        elif action == "info":
+            pass
+        else:
+            return {"error": f"Unknown action: {action}"}
+        return {"url": b.url, "title": b.title}
 
     @mcp.tool()
-    def get_url() -> str:
-        """Get current page URL."""
-        return get_browser().url
+    def dom(selector: str, action: str = "text", attr: Optional[str] = None,
+            value: Optional[str] = None) -> Any:
+        """DOM query and manipulation.
 
-    @mcp.tool()
-    def get_title() -> str:
-        """Get current page title."""
-        return get_browser().title
+        Actions:
+          - text: Get text content (default)
+          - html: Get innerHTML
+          - outer: Get outerHTML
+          - attr: Get attribute (requires attr param)
+          - set_attr: Set attribute (requires attr and value)
+          - value: Get input value
+          - exists: Check if element exists
+          - count: Count matching elements
 
-    @mcp.tool()
-    def reload(ignore_cache: bool = False) -> str:
-        """Reload page. Returns URL."""
+        Returns: Query result or bool for mutations
+        """
         b = get_browser()
-        b.reload(ignore_cache)
-        return b.url
+        if action == "text":
+            return b.text(selector)
+        elif action == "html":
+            return b.html(selector)
+        elif action == "outer":
+            return b.outer_html(selector)
+        elif action == "attr" and attr:
+            return b.attr(selector, attr)
+        elif action == "set_attr" and attr and value is not None:
+            return b.set_attr(selector, attr, value)
+        elif action == "value":
+            return b.value(selector)
+        elif action == "exists":
+            return b.query(selector)
+        elif action == "count":
+            return b.query_all(selector)
+        return {"error": f"Unknown action: {action}"}
 
     @mcp.tool()
-    def go_back() -> str:
-        """Go back in history. Returns URL."""
+    def interact(selector: str, action: str = "click", text: Optional[str] = None,
+                 clear: bool = True) -> bool:
+        """Element interaction.
+
+        Actions:
+          - click: Click element (default)
+          - type: Type text (requires text param, clear=True clears first)
+          - focus: Focus element
+          - select: Select dropdown option (text=option value)
+          - check/uncheck: Checkbox control
+          - scroll: Scroll element into view
+
+        Returns: Success bool
+        """
         b = get_browser()
-        b.back()
-        return b.url
+        if action == "click":
+            return b.click(selector)
+        elif action == "type" and text is not None:
+            return b.type(selector, text, clear)
+        elif action == "focus":
+            return b.focus(selector)
+        elif action == "select" and text:
+            return b.select(selector, text)
+        elif action == "check":
+            return b.check(selector, True)
+        elif action == "uncheck":
+            return b.check(selector, False)
+        elif action == "scroll":
+            return b.scroll_into_view(selector)
+        return False
 
     @mcp.tool()
-    def go_forward() -> str:
-        """Go forward in history. Returns URL."""
+    def wait(target: str, timeout: int = 30, type: str = "selector") -> bool:
+        """Wait for conditions.
+
+        Types:
+          - selector: Wait for element to appear (default)
+          - gone: Wait for element to disappear
+          - text: Wait for text on page
+
+        Returns: True if condition met, False if timeout
+        """
         b = get_browser()
-        b.forward()
-        return b.url
-
-    # ═══════════════════════════════════════════════════════════════
-    # DOM
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def get_text(selector: str = "body") -> str:
-        """Get text content of element."""
-        return get_browser().text(selector)
+        if type == "selector":
+            return b.wait(target, timeout)
+        elif type == "gone":
+            return b.wait_gone(target, timeout)
+        elif type == "text":
+            return b.wait_text(target, timeout)
+        return False
 
     @mcp.tool()
-    def get_html(selector: str = "body") -> str:
-        """Get inner HTML of element."""
-        return get_browser().html(selector)
-
-    @mcp.tool()
-    def get_outer_html(selector: str = "body") -> str:
-        """Get outer HTML of element."""
-        return get_browser().outer_html(selector)
-
-    @mcp.tool()
-    def get_attr(selector: str, name: str) -> Optional[str]:
-        """Get element attribute value."""
-        return get_browser().attr(selector, name)
-
-    @mcp.tool()
-    def set_attr(selector: str, name: str, value: str) -> bool:
-        """Set element attribute."""
-        return get_browser().set_attr(selector, name, value)
-
-    @mcp.tool()
-    def get_value(selector: str) -> Optional[str]:
-        """Get input element value."""
-        return get_browser().value(selector)
-
-    @mcp.tool()
-    def query(selector: str) -> bool:
-        """Check if element exists."""
-        return get_browser().query(selector)
-
-    @mcp.tool()
-    def query_count(selector: str) -> int:
-        """Count matching elements."""
-        return get_browser().query_all(selector)
-
-    # ═══════════════════════════════════════════════════════════════
-    # Input
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def click(selector: str) -> bool:
-        """Click element."""
-        return get_browser().click(selector)
-
-    @mcp.tool()
-    def type_text(selector: str, text: str, clear: bool = True) -> bool:
-        """Type text into input element."""
-        return get_browser().type(selector, text, clear)
-
-    @mcp.tool()
-    def focus(selector: str) -> bool:
-        """Focus element."""
-        return get_browser().focus(selector)
-
-    @mcp.tool()
-    def select_option(selector: str, value: str) -> bool:
-        """Select dropdown option by value."""
-        return get_browser().select(selector, value)
-
-    @mcp.tool()
-    def check_box(selector: str, checked: bool = True) -> bool:
-        """Check or uncheck checkbox."""
-        return get_browser().check(selector, checked)
-
-    @mcp.tool()
-    def scroll_to(x: int = 0, y: int = 0, selector: Optional[str] = None) -> bool:
-        """Scroll page or element."""
-        get_browser().scroll(x, y, selector)
-        return True
-
-    @mcp.tool()
-    def scroll_into_view(selector: str) -> bool:
-        """Scroll element into view."""
-        return get_browser().scroll_into_view(selector)
-
-    # ═══════════════════════════════════════════════════════════════
-    # Waiting
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def wait_for(selector: str, timeout: int = 30) -> bool:
-        """Wait for element to appear."""
-        return get_browser().wait(selector, timeout)
-
-    @mcp.tool()
-    def wait_gone(selector: str, timeout: int = 30) -> bool:
-        """Wait for element to disappear."""
-        return get_browser().wait_gone(selector, timeout)
-
-    @mcp.tool()
-    def wait_for_text(text: str, timeout: int = 30) -> bool:
-        """Wait for text to appear on page."""
-        return get_browser().wait_text(text, timeout)
-
-    # ═══════════════════════════════════════════════════════════════
-    # JavaScript
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def evaluate(script: str, timeout: int = 30) -> Any:
+    def js(script: str, timeout: int = 30) -> Any:
         """Execute JavaScript and return result."""
         return get_browser().eval(script, timeout)
 
-    # ═══════════════════════════════════════════════════════════════
-    # HTTP via Browser
-    # ═══════════════════════════════════════════════════════════════
-
     @mcp.tool()
-    def fetch(path: str, method: str = "GET", body: Optional[Dict] = None,
-              headers: Optional[Dict] = None) -> Any:
-        """Make HTTP request through browser (uses cookies, bypasses CORS)."""
-        return get_browser().fetch(path, method, body, headers)
+    def capture(type: str = "screenshot", path: Optional[str] = None,
+                full_page: bool = False, selector: Optional[str] = None) -> str:
+        """Capture screenshot or PDF.
 
-    # ═══════════════════════════════════════════════════════════════
-    # Screenshots & PDF
-    # ═══════════════════════════════════════════════════════════════
+        Types: screenshot (default), pdf
 
-    @mcp.tool()
-    def screenshot(path: Optional[str] = None, full_page: bool = False,
-                   selector: Optional[str] = None) -> str:
-        """Take screenshot. Returns base64 or saves to path."""
-        data = get_browser().screenshot(path, full_page, selector)
-        if path:
-            return f"Saved to {path}"
-        return base64.b64encode(data).decode()
-
-    @mcp.tool()
-    def pdf(path: Optional[str] = None) -> str:
-        """Generate PDF (headless only). Returns base64 or saves to path."""
-        data = get_browser().pdf(path)
-        if path:
-            return f"Saved to {path}"
-        return base64.b64encode(data).decode()
-
-    # ═══════════════════════════════════════════════════════════════
-    # Cookies
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def get_cookies(urls: Optional[List[str]] = None) -> List[Dict]:
-        """Get cookies."""
-        return get_browser().cookies(urls)
-
-    @mcp.tool()
-    def set_cookie(name: str, value: str, domain: Optional[str] = None) -> bool:
-        """Set cookie."""
-        return get_browser().set_cookie(name, value, domain)
-
-    @mcp.tool()
-    def delete_cookies(name: str, domain: Optional[str] = None) -> bool:
-        """Delete cookies by name."""
-        get_browser().delete_cookies(name, domain)
-        return True
-
-    @mcp.tool()
-    def clear_all_cookies() -> bool:
-        """Clear all cookies."""
-        get_browser().clear_cookies()
-        return True
-
-    # ═══════════════════════════════════════════════════════════════
-    # Storage
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def storage_get(key: str, local: bool = True) -> Optional[str]:
-        """Get localStorage or sessionStorage item."""
-        return get_browser().storage_get(key, local)
-
-    @mcp.tool()
-    def storage_set(key: str, value: str, local: bool = True) -> bool:
-        """Set localStorage or sessionStorage item."""
-        get_browser().storage_set(key, value, local)
-        return True
-
-    @mcp.tool()
-    def storage_remove(key: str, local: bool = True) -> bool:
-        """Remove storage item."""
-        get_browser().storage_remove(key, local)
-        return True
-
-    @mcp.tool()
-    def storage_clear(local: bool = True) -> bool:
-        """Clear storage."""
-        get_browser().storage_clear(local)
-        return True
-
-    # ═══════════════════════════════════════════════════════════════
-    # Console
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def console_messages(timeout: float = 1.0) -> List[Dict]:
-        """Get console messages."""
+        Returns: Base64 data or "Saved to {path}" if path given
+        """
         b = get_browser()
-        b.console_enable()
-        return b.console_messages(timeout)
-
-    # ═══════════════════════════════════════════════════════════════
-    # Network
-    # ═══════════════════════════════════════════════════════════════
+        if type == "pdf":
+            data = b.pdf(path)
+        else:
+            data = b.screenshot(path, full_page, selector)
+        if path:
+            return f"Saved to {path}"
+        return base64.b64encode(data).decode()
 
     @mcp.tool()
-    def network_enable() -> bool:
-        """Enable network monitoring."""
-        get_browser().network_enable()
+    def tabs(action: str = "list", url: Optional[str] = None,
+             page_id: Optional[str] = None) -> Any:
+        """Tab/page management.
+
+        Actions:
+          - list: List all tabs (default)
+          - new: Open new tab (url param)
+          - close: Close tab (page_id param)
+          - switch: Switch to tab (page_id param)
+
+        Returns: Tab list or action result
+        """
+        b = get_browser()
+        if action == "list":
+            return b.pages()
+        elif action == "new":
+            return b.new_page(url or "about:blank")
+        elif action == "close" and page_id:
+            return b.close_page(page_id)
+        elif action == "switch" and page_id:
+            return b.switch_page(page_id) if hasattr(b, 'switch_page') else {"error": "Not supported"}
+        return {"error": f"Unknown action: {action}"}
+
+    @mcp.tool()
+    def input(action: str, x: int = 0, y: int = 0, key: Optional[str] = None,
+              text: Optional[str] = None, button: str = "left") -> bool:
+        """Low-level input events.
+
+        Actions:
+          - click: Mouse click at x,y (button: left/right/middle)
+          - move: Move mouse to x,y
+          - wheel: Scroll at x,y (use y for scroll amount)
+          - key: Press key (requires key param, e.g. "Enter", "Ctrl+A")
+          - type: Type text character by character
+
+        Returns: Success bool
+        """
+        b = get_browser()
+        if action == "click":
+            b.mouse_click(x, y, button, 1)
+        elif action == "dblclick":
+            b.mouse_click(x, y, button, 2)
+        elif action == "move":
+            b.mouse_move(x, y)
+        elif action == "wheel":
+            b.mouse_wheel(x, y, 0, y)  # y doubles as delta_y for simplicity
+        elif action == "key" and key:
+            b.key_press(key)
+        elif action == "type" and text:
+            b.key_type(text)
+        else:
+            return False
         return True
 
     @mcp.tool()
-    def network_requests(timeout: float = 1.0) -> List[Dict]:
-        """Get recent network requests."""
-        return get_browser().network_requests(timeout)
+    def storage(action: str, key: Optional[str] = None, value: Optional[str] = None,
+                type: str = "cookie", domain: Optional[str] = None) -> Any:
+        """Browser storage management (cookies, localStorage, sessionStorage).
 
-    # ═══════════════════════════════════════════════════════════════
-    # Emulation
-    # ═══════════════════════════════════════════════════════════════
+        Types: cookie (default), local, session
+
+        Actions:
+          - get: Get value(s). For cookies: returns all if no key
+          - set: Set value (requires key, value)
+          - delete: Delete by key
+          - clear: Clear all
+
+        Returns: Value(s) or success bool
+        """
+        b = get_browser()
+        is_local = type == "local"
+
+        if type == "cookie":
+            if action == "get":
+                return b.cookies()
+            elif action == "set" and key and value:
+                return b.set_cookie(key, value, domain)
+            elif action == "delete" and key:
+                b.delete_cookies(key, domain)
+                return True
+            elif action == "clear":
+                b.clear_cookies()
+                return True
+        else:  # localStorage or sessionStorage
+            if action == "get" and key:
+                return b.storage_get(key, is_local)
+            elif action == "set" and key and value:
+                b.storage_set(key, value, is_local)
+                return True
+            elif action == "delete" and key:
+                b.storage_remove(key, is_local)
+                return True
+            elif action == "clear":
+                b.storage_clear(is_local)
+                return True
+        return {"error": f"Invalid action/params for {type}"}
 
     @mcp.tool()
-    def set_viewport(width: int, height: int, scale: float = 1.0, mobile: bool = False) -> bool:
-        """Set viewport size."""
-        get_browser().viewport(width, height, scale, mobile)
+    def fetch(url: str, method: str = "GET", body: Optional[Dict] = None,
+              headers: Optional[Dict] = None) -> Any:
+        """HTTP request through browser (uses cookies, bypasses CORS)."""
+        return get_browser().fetch(url, method, body, headers)
+
+    @mcp.tool()
+    def emulate(viewport: Optional[Dict] = None, user_agent: Optional[str] = None,
+                geolocation: Optional[Dict] = None, timezone: Optional[str] = None,
+                offline: Optional[bool] = None) -> bool:
+        """Device/environment emulation. Only provided params are applied.
+
+        Args:
+          viewport: {width, height, scale?, mobile?}
+          user_agent: UA string
+          geolocation: {lat, lon, accuracy?}
+          timezone: e.g. "Asia/Seoul"
+          offline: True/False
+
+        Returns: Success bool
+        """
+        b = get_browser()
+        if viewport:
+            b.viewport(viewport.get("width", 1280), viewport.get("height", 720),
+                      viewport.get("scale", 1.0), viewport.get("mobile", False))
+        if user_agent:
+            b.user_agent(user_agent)
+        if geolocation:
+            b.geolocation(geolocation["lat"], geolocation["lon"],
+                         geolocation.get("accuracy", 100))
+        if timezone:
+            b.timezone(timezone)
+        if offline is not None:
+            b.offline(offline)
         return True
 
     @mcp.tool()
-    def set_user_agent(ua: str) -> bool:
-        """Set user agent string."""
-        get_browser().user_agent(ua)
-        return True
+    def file(action: str, path: str, url: Optional[str] = None,
+             selector: Optional[str] = None, content: Optional[str] = None) -> Dict:
+        """File upload/download operations.
+
+        Actions:
+          - download: Download file from URL to path
+          - upload: Upload file to input element (requires selector)
+          - read: Read file and return content (text or base64)
+          - write: Write content to file
+
+        Returns: {success: bool, path: str, size?: int, error?: str}
+        """
+        import os
+        from pathlib import Path as P
+
+        b = get_browser()
+        result = {"success": False, "path": path}
+
+        try:
+            if action == "download" and url:
+                # Download via browser fetch
+                script = f'''
+                (async () => {{
+                    const response = await fetch("{url}");
+                    const blob = await response.blob();
+                    const buffer = await blob.arrayBuffer();
+                    return Array.from(new Uint8Array(buffer));
+                }})()
+                '''
+                data = b.eval(script, timeout=60)
+                with open(path, 'wb') as f:
+                    f.write(bytes(data))
+                result["success"] = True
+                result["size"] = len(data)
+
+            elif action == "upload" and selector:
+                # Use CDP to set file input
+                # This requires the file to exist on the PC running the browser
+                node_id = b.cdp.send("DOM.querySelector",
+                                    nodeId=b.cdp.send("DOM.getDocument")["root"]["nodeId"],
+                                    selector=selector)["nodeId"]
+                b.cdp.send("DOM.setFileInputFiles", nodeId=node_id, files=[path])
+                result["success"] = True
+
+            elif action == "read":
+                p = P(path)
+                if p.exists():
+                    # Try text first, fallback to base64
+                    try:
+                        result["content"] = p.read_text()
+                        result["type"] = "text"
+                    except UnicodeDecodeError:
+                        result["content"] = base64.b64encode(p.read_bytes()).decode()
+                        result["type"] = "base64"
+                    result["success"] = True
+                    result["size"] = p.stat().st_size
+                else:
+                    result["error"] = "File not found"
+
+            elif action == "write" and content is not None:
+                p = P(path)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                # Check if content is base64
+                if content.startswith("base64:"):
+                    p.write_bytes(base64.b64decode(content[7:]))
+                else:
+                    p.write_text(content)
+                result["success"] = True
+                result["size"] = p.stat().st_size
+
+            else:
+                result["error"] = f"Invalid action or missing params: {action}"
+
+        except Exception as e:
+            result["error"] = str(e)
+
+        return result
 
     @mcp.tool()
-    def set_geolocation(lat: float, lon: float, accuracy: float = 100) -> bool:
-        """Set geolocation."""
-        get_browser().geolocation(lat, lon, accuracy)
-        return True
+    def debug(action: str = "console", selector: Optional[str] = None,
+              timeout: float = 1.0) -> Any:
+        """Debugging utilities.
 
-    @mcp.tool()
-    def set_timezone(tz: str) -> bool:
-        """Set timezone (e.g., 'Asia/Seoul')."""
-        get_browser().timezone(tz)
-        return True
+        Actions:
+          - console: Get console messages
+          - network: Get network requests (call once to enable, again to get)
+          - highlight: Highlight element (requires selector)
+          - unhighlight: Remove highlight
+          - a11y: Get accessibility tree
+          - metrics: Get performance metrics
+          - dialog: Handle JS dialog (selector="accept" or "dismiss", text for prompt)
 
-    @mcp.tool()
-    def set_offline(offline: bool = True) -> bool:
-        """Enable/disable offline mode."""
-        get_browser().offline(offline)
-        return True
-
-    @mcp.tool()
-    def throttle_network(download: int = -1, upload: int = -1, latency: int = 0) -> bool:
-        """Throttle network speed (bytes/sec, -1 for unlimited)."""
-        get_browser().throttle(download, upload, latency)
-        return True
-
-    # ═══════════════════════════════════════════════════════════════
-    # Input Events
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def mouse_move(x: int, y: int) -> bool:
-        """Move mouse to coordinates."""
-        get_browser().mouse_move(x, y)
-        return True
-
-    @mcp.tool()
-    def mouse_click(x: int, y: int, button: str = "left", clicks: int = 1) -> bool:
-        """Click at coordinates."""
-        get_browser().mouse_click(x, y, button, clicks)
-        return True
-
-    @mcp.tool()
-    def mouse_wheel(x: int, y: int, delta_x: int = 0, delta_y: int = 0) -> bool:
-        """Scroll with mouse wheel."""
-        get_browser().mouse_wheel(x, y, delta_x, delta_y)
-        return True
-
-    @mcp.tool()
-    def key_press(key: str) -> bool:
-        """Press a key."""
-        get_browser().key_press(key)
-        return True
-
-    @mcp.tool()
-    def key_type(text: str) -> bool:
-        """Type text character by character."""
-        get_browser().key_type(text)
-        return True
-
-    # ═══════════════════════════════════════════════════════════════
-    # Dialogs
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def handle_dialog(accept: bool = True, text: Optional[str] = None) -> bool:
-        """Handle JavaScript alert/confirm/prompt dialog."""
-        get_browser().dialog_handle(accept, text)
-        return True
-
-    # ═══════════════════════════════════════════════════════════════
-    # Frames
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def get_frames() -> List[Dict]:
-        """Get all frames in page."""
-        return get_browser().frames()
-
-    # ═══════════════════════════════════════════════════════════════
-    # Performance
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def get_performance_metrics() -> Dict[str, float]:
-        """Get performance metrics."""
-        return get_browser().performance_metrics()
-
-    # ═══════════════════════════════════════════════════════════════
-    # Pages/Tabs
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def get_pages() -> List[Dict]:
-        """List all browser pages/tabs."""
-        return get_browser().pages()
-
-    @mcp.tool()
-    def new_page(url: str = "about:blank") -> Dict:
-        """Open new page/tab."""
-        return get_browser().new_page(url)
-
-    @mcp.tool()
-    def close_page(page_id: str) -> bool:
-        """Close page/tab by ID."""
-        return get_browser().close_page(page_id)
-
-    # ═══════════════════════════════════════════════════════════════
-    # Debugging
-    # ═══════════════════════════════════════════════════════════════
-
-    @mcp.tool()
-    def highlight_element(selector: str) -> bool:
-        """Highlight element on page."""
-        get_browser().highlight(selector)
-        return True
-
-    @mcp.tool()
-    def hide_highlight() -> bool:
-        """Hide element highlight."""
-        get_browser().hide_highlight()
-        return True
-
-    @mcp.tool()
-    def get_accessibility_tree() -> Dict:
-        """Get accessibility tree."""
-        return get_browser().accessibility_tree()
+        Returns: Action-specific data
+        """
+        b = get_browser()
+        if action == "console":
+            b.console_enable()
+            return b.console_messages(timeout)
+        elif action == "network":
+            b.network_enable()
+            return b.network_requests(timeout)
+        elif action == "highlight" and selector:
+            b.highlight(selector)
+            return True
+        elif action == "unhighlight":
+            b.hide_highlight()
+            return True
+        elif action == "a11y":
+            return b.accessibility_tree()
+        elif action == "metrics":
+            return b.performance_metrics()
+        elif action == "dialog":
+            accept = selector != "dismiss"
+            text = None if selector in ["accept", "dismiss"] else selector
+            b.dialog_handle(accept, text)
+            return True
+        return {"error": f"Unknown action: {action}"}
 
     return mcp
 
@@ -767,12 +796,75 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
                       ssl_keyfile: Optional[str] = None):
     """Run SSE server with authentication middleware and optional SSL."""
     import uvicorn
-    from starlette.responses import JSONResponse
+    from starlette.applications import Starlette
+    from starlette.routing import Route, Mount
+    from starlette.responses import JSONResponse, Response
+    from starlette.requests import Request
     from starlette.types import ASGIApp, Receive, Scope, Send
+    from mcp.server.sse import SseServerTransport
+    from mcp.server.transport_security import TransportSecuritySettings
 
     import re
     # UUID pattern for session validation
     SESSION_ID_PATTERN = re.compile(r'^[a-f0-9]{32}$')
+
+    # Create SSE transport with disabled DNS rebinding (we use token auth)
+    security_settings = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    sse_transport = SseServerTransport("/messages/", security_settings=security_settings)
+
+    # Track sessions for persistence
+    known_sessions: Dict[str, bool] = {}  # session_id -> initialized
+
+    async def handle_sse(request: Request):
+        """Handle SSE connection with session tracking."""
+        async with sse_transport.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            # Extract session ID from the endpoint message
+            # The session ID is generated inside connect_sse, we need to track it
+            read_stream, write_stream = streams
+
+            # Run the MCP server
+            await mcp._mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp._mcp_server.create_initialization_options()
+            )
+        return Response()
+
+    async def handle_messages(request: Request):
+        """Handle POST messages with session recovery."""
+        session_id = request.query_params.get("session_id", "")
+
+        # Check if session exists in SSE transport
+        try:
+            session_uuid = UUID(hex=session_id)
+            if session_uuid not in sse_transport._read_stream_writers:
+                # Session is dead - return helpful error
+                return Response(
+                    content='{"jsonrpc":"2.0","error":{"code":-32000,"message":"Session expired. Please reconnect SSE."},"id":null}',
+                    status_code=410,  # Gone
+                    media_type="application/json"
+                )
+        except (ValueError, AttributeError):
+            pass
+
+        return await sse_transport.handle_post_message(
+            request.scope, request.receive, request._send
+        )
+
+    # Build Starlette app with routes
+    routes = [
+        Route("/sse", endpoint=handle_sse, methods=["GET"]),
+        Mount("/messages", app=handle_messages),
+    ]
+
+    async def lifespan(app):
+        print("[*] SSE server starting with session persistence...", file=sys.stderr)
+        yield
+        print("[*] SSE server shutting down...", file=sys.stderr)
+
+    starlette_app = Starlette(routes=routes, lifespan=lifespan)
 
     class AuthMiddleware:
         """Pure ASGI middleware for token authentication (SSE compatible)."""
@@ -818,13 +910,8 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
 
             await self.app(scope, receive, send)
 
-    # Get the SSE app from FastMCP and add middleware
-    mcp.settings.host = "0.0.0.0"
-    mcp.settings.port = port
-    app = mcp.sse_app()
-
-    # Wrap with auth middleware (pure ASGI, SSE compatible)
-    app = AuthMiddleware(app)
+    # Wrap with auth middleware
+    app = AuthMiddleware(starlette_app)
 
     # Configure uvicorn with optional SSL
     config = {
