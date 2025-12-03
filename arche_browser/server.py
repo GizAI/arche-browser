@@ -745,35 +745,49 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
                       ssl_keyfile: Optional[str] = None):
     """Run SSE server with authentication middleware and optional SSL."""
     import uvicorn
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.middleware.trustedhost import TrustedHostMiddleware
     from starlette.responses import JSONResponse
+    from starlette.types import ASGIApp, Receive, Scope, Send
 
-    class AuthMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            # Check token from query param or header
-            token = request.query_params.get("token", "")
+    class AuthMiddleware:
+        """Pure ASGI middleware for token authentication (SSE compatible)."""
+
+        def __init__(self, app: ASGIApp):
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            # Extract token from query params or headers
+            from urllib.parse import parse_qs
+            query_string = scope.get("query_string", b"").decode()
+            query_params = parse_qs(query_string)
+            token = query_params.get("token", [""])[0]
+
             if not token:
-                auth_header = request.headers.get("Authorization", "")
+                headers = dict(scope.get("headers", []))
+                auth_header = headers.get(b"authorization", b"").decode()
                 if auth_header.startswith("Bearer "):
                     token = auth_header[7:]
 
             if not auth.verify(token):
-                return JSONResponse(
+                response = JSONResponse(
                     {"error": "Unauthorized - Invalid or missing token"},
                     status_code=401
                 )
+                await response(scope, receive, send)
+                return
 
-            return await call_next(request)
+            await self.app(scope, receive, send)
 
     # Get the SSE app from FastMCP and add middleware
     mcp.settings.host = "0.0.0.0"
     mcp.settings.port = port
     app = mcp.sse_app()
 
-    # Allow all hosts for remote access (token auth provides security)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
-    app.add_middleware(AuthMiddleware)
+    # Wrap with auth middleware (pure ASGI, SSE compatible)
+    app = AuthMiddleware(app)
 
     # Configure uvicorn with optional SSL
     config = {
