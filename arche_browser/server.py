@@ -7,6 +7,10 @@ Exposes all browser functionality as MCP tools.
 import sys
 import base64
 import atexit
+import socket
+import threading
+import ipaddress
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .chrome import Chrome
@@ -14,21 +18,23 @@ from .browser import Browser
 from .auth import TokenAuth, create_auth_middleware
 
 
-# Global state
+# Global state with thread safety
+_lock = threading.Lock()
 _chrome: Optional[Chrome] = None
 _browser: Optional[Browser] = None
 _auth: Optional[TokenAuth] = None
 
 
 def get_browser() -> Browser:
-    """Get or create browser instance."""
+    """Get or create browser instance (thread-safe)."""
     global _chrome, _browser
 
-    if _browser is None or _browser.cdp._ws is None:
-        if _chrome is None:
-            _chrome = Chrome()
-            _chrome.start()
-        _browser = Browser(f"localhost:{_chrome.port}")
+    with _lock:
+        if _browser is None or _browser.cdp._ws is None:
+            if _chrome is None:
+                _chrome = Chrome()
+                _chrome.start()
+            _browser = Browser(f"localhost:{_chrome.port}")
 
     return _browser
 
@@ -36,15 +42,121 @@ def get_browser() -> Browser:
 def cleanup():
     """Cleanup on exit."""
     global _chrome, _browser
-    if _browser:
-        _browser.close()
+    try:
+        if _browser:
+            _browser.close()
+    except Exception:
+        pass
+    finally:
         _browser = None
-    if _chrome:
-        _chrome.stop()
+
+    try:
+        if _chrome:
+            _chrome.stop()
+    except Exception:
+        pass
+    finally:
         _chrome = None
 
 
 atexit.register(cleanup)
+
+
+def get_local_ip() -> str:
+    """Get local network IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def get_public_ip() -> Optional[str]:
+    """Get public IP address."""
+    import requests
+    try:
+        resp = requests.get("https://api.ipify.org", timeout=3)
+        return resp.text.strip()
+    except Exception:
+        try:
+            resp = requests.get("https://ifconfig.me/ip", timeout=3)
+            return resp.text.strip()
+        except Exception:
+            return None
+
+
+def ensure_ssl_certs() -> tuple:
+    """Ensure SSL certificates exist, generate if needed."""
+    cert_dir = Path.home() / ".arche-browser" / "ssl"
+    cert_dir.mkdir(parents=True, exist_ok=True)
+
+    cert_file = cert_dir / "cert.pem"
+    key_file = cert_dir / "key.pem"
+
+    if cert_file.exists() and key_file.exists():
+        return str(cert_file), str(key_file)
+
+    # Generate self-signed certificate
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import datetime
+
+        # Generate key
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+        # Generate certificate
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "arche-browser"),
+        ])
+
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime.utcnow())
+            .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+            .add_extension(
+                x509.SubjectAlternativeName([
+                    x509.DNSName("localhost"),
+                    x509.DNSName("*"),
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                ]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+
+        # Write files
+        with open(key_file, "wb") as f:
+            f.write(key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+
+        with open(cert_file, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+        return str(cert_file), str(key_file)
+
+    except ImportError:
+        # Fallback: use openssl command
+        import subprocess
+        subprocess.run([
+            "openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", str(key_file), "-out", str(cert_file),
+            "-days", "365", "-nodes",
+            "-subj", "/CN=arche-browser"
+        ], check=True, capture_output=True)
+        return str(cert_file), str(key_file)
 
 
 def create_server(headless: bool = False, local_control: bool = False, browser_tools: bool = True):
@@ -554,28 +666,65 @@ def run(
                 print(f"[!] Browser tools will not be available", file=sys.stderr)
 
     if transport == "sse":
+        # Get IP addresses
+        local_ip = get_local_ip()
+        public_ip = get_public_ip()
+
+        # Generate SSL certificates
+        try:
+            cert_file, key_file = ensure_ssl_certs()
+            use_ssl = True
+            protocol = "https"
+        except Exception as e:
+            print(f"[!] SSL certificate generation failed: {e}", file=sys.stderr)
+            print(f"[!] Falling back to HTTP (not secure for remote access)", file=sys.stderr)
+            cert_file, key_file = None, None
+            use_ssl = False
+            protocol = "http"
+
         if auth:
             _auth = TokenAuth(token)
             auth_token = _auth.token
 
+            print(f"", file=sys.stderr)
             print(f"[*] Arche Browser MCP Server (SSE)", file=sys.stderr)
             print(f"[*] Port: {port}", file=sys.stderr)
+            print(f"[*] Protocol: {protocol.upper()}", file=sys.stderr)
             print(f"[*] Auth: ENABLED", file=sys.stderr)
             print(f"[*] Token: {auth_token}", file=sys.stderr)
             print(f"", file=sys.stderr)
-            print(f"[*] Connect URL:", file=sys.stderr)
-            print(f"    http://localhost:{port}/sse?token={auth_token}", file=sys.stderr)
+            print(f"[*] Network:", file=sys.stderr)
+            print(f"    Local:  {local_ip}", file=sys.stderr)
+            if public_ip:
+                print(f"    Public: {public_ip}", file=sys.stderr)
+            print(f"", file=sys.stderr)
+            print(f"[*] Connect URLs:", file=sys.stderr)
+            print(f"    {protocol}://localhost:{port}/sse?token={auth_token}", file=sys.stderr)
+            print(f"    {protocol}://{local_ip}:{port}/sse?token={auth_token}", file=sys.stderr)
+            if public_ip:
+                print(f"    {protocol}://{public_ip}:{port}/sse?token={auth_token}", file=sys.stderr)
             print(f"", file=sys.stderr)
             print(f"[*] Claude Code MCP config:", file=sys.stderr)
-            print(f'    {{"url": "http://HOST:{port}/sse?token={auth_token}"}}', file=sys.stderr)
+            print(f'    {{"url": "{protocol}://{local_ip}:{port}/sse?token={auth_token}"}}', file=sys.stderr)
+            if use_ssl:
+                print(f"", file=sys.stderr)
+                print(f"[*] SSL Certificate: {cert_file}", file=sys.stderr)
 
             # Run with auth middleware
-            run_sse_with_auth(mcp, port, _auth)
+            run_sse_with_auth(mcp, port, _auth, cert_file, key_file)
         else:
+            print(f"", file=sys.stderr)
             print(f"[*] Arche Browser MCP Server (SSE)", file=sys.stderr)
             print(f"[*] Port: {port}", file=sys.stderr)
+            print(f"[*] Protocol: {protocol.upper()}", file=sys.stderr)
             print(f"[*] Auth: DISABLED (not recommended)", file=sys.stderr)
-            print(f"[*] URL: http://localhost:{port}/sse", file=sys.stderr)
+            print(f"", file=sys.stderr)
+            print(f"[*] Network:", file=sys.stderr)
+            print(f"    Local:  {local_ip}", file=sys.stderr)
+            if public_ip:
+                print(f"    Public: {public_ip}", file=sys.stderr)
+            print(f"", file=sys.stderr)
+            print(f"[*] URL: {protocol}://localhost:{port}/sse", file=sys.stderr)
             mcp.settings.port = port
             mcp.run(transport="sse")
     else:
@@ -583,8 +732,10 @@ def run(
         mcp.run()
 
 
-def run_sse_with_auth(mcp, port: int, auth: TokenAuth):
-    """Run SSE server with authentication middleware."""
+def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
+                      ssl_certfile: Optional[str] = None,
+                      ssl_keyfile: Optional[str] = None):
+    """Run SSE server with authentication middleware and optional SSL."""
     import uvicorn
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
@@ -612,4 +763,14 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth):
     app = mcp.sse_app()
     app.add_middleware(AuthMiddleware)
 
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    # Configure uvicorn with optional SSL
+    config = {
+        "host": "0.0.0.0",
+        "port": port,
+        "log_level": "warning"
+    }
+    if ssl_certfile and ssl_keyfile:
+        config["ssl_certfile"] = ssl_certfile
+        config["ssl_keyfile"] = ssl_keyfile
+
+    uvicorn.run(app, **config)

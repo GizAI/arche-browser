@@ -76,8 +76,18 @@ class CDP:
         self._ws = websocket.create_connection(ws_url, timeout=60)
         return self
 
-    def send(self, method: str, params: Optional[Dict] = None) -> Dict:
-        """Send CDP command and return result."""
+    def send(self, method: str, params: Optional[Dict] = None, max_events: int = 200) -> Dict:
+        """Send CDP command and return result.
+
+        Args:
+            method: CDP method name
+            params: Optional parameters
+            max_events: Maximum events to process before timeout (default: 200)
+
+        Raises:
+            TimeoutError: If response not received within max_events
+            RuntimeError: If CDP returns an error
+        """
         if not self._ws:
             self.connect()
 
@@ -88,7 +98,7 @@ class CDP:
         self._ws.send(json.dumps(msg))
 
         # Wait for response, dispatch events
-        for _ in range(200):
+        for _ in range(max_events):
             result = json.loads(self._ws.recv())
 
             if "method" in result:
@@ -102,7 +112,8 @@ class CDP:
                 if "error" in result:
                     raise RuntimeError(f"CDP: {result['error']}")
                 return result.get("result", {})
-        return {}
+
+        raise TimeoutError(f"CDP: No response for '{method}' after {max_events} events")
 
     def on(self, event: str, callback: Callable[[Dict], None]):
         """Subscribe to CDP event."""
@@ -125,9 +136,10 @@ class CDP:
                     if event in self._callbacks:
                         for cb in self._callbacks[event]:
                             cb(params)
-        except:
-            pass
-        self._ws.settimeout(60)
+        except (websocket.WebSocketTimeoutException, websocket.WebSocketException, json.JSONDecodeError):
+            pass  # Expected: timeout or connection closed
+        finally:
+            self._ws.settimeout(60)
         return events
 
     def close(self):
@@ -135,9 +147,14 @@ class CDP:
         if self._ws:
             try:
                 self._ws.close()
-            except:
+            except (websocket.WebSocketException, OSError):
                 pass
-            self._ws = None
+            finally:
+                self._ws = None
+
+    def __del__(self):
+        """Ensure WebSocket is closed on garbage collection."""
+        self.close()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -188,7 +205,7 @@ class Browser:
             if isinstance(value, str):
                 try:
                     return json.loads(value)
-                except:
+                except (json.JSONDecodeError, ValueError):
                     return value
             return value
         return None
