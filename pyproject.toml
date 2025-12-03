@@ -12,7 +12,10 @@ requires-python = ">=3.10"
 authors = [
     {name = "GizAI"}
 ]
-keywords = ["mcp", "browser", "automation", "chrome", "cdp", "devtools", "claude"]
+keywords = [
+    "mcp", "browser", "automation", "chrome", "cdp",
+    "devtools", "claude", "selenium", "puppeteer", "playwright"
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -32,14 +35,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "black", "mypy"]
+dev = ["pytest", "black", "mypy", "ruff"]
 
 [project.scripts]
-arche-browser = "arche_browser:main"
+arche-browser = "arche_browser.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/GizAI/arche-browser"
+Repository = "https://github.com/GizAI/arche-browser"
 Issues = "https://github.com/GizAI/arche-browser/issues"
 
-[tool.setuptools]
-py-modules = ["arche_browser"]
+[tool.setuptools.packages.find]
+include = ["arche_browser*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]

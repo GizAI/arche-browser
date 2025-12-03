@@ -2,26 +2,34 @@
 
 MCP Server for Browser Automation via Chrome DevTools Protocol.
 
-Control a real Chrome browser from Claude Code or any MCP client - locally or remotely.
+Control a real Chrome browser from Claude Code or any MCP client.
 
-## Quick Start
+## Features
+
+- **Full Browser Control**: Navigation, clicks, typing, screenshots, and more
+- **Real Browser**: Uses your actual Chrome with cookies, extensions, login sessions
+- **Remote Access**: Control browser on any machine via SSE transport
+- **Site-Specific Clients**: Built-in ChatGPT client with bot detection bypass
+- **Complete CDP Access**: Cookies, storage, network, console, emulation, performance
+
+## Installation
 
 ```bash
-# Install
+# From PyPI
 pip install arche-browser
 
-# Or install from source
+# From GitHub
 pip install git+https://github.com/GizAI/arche-browser.git
 
-# Or one-liner (no install needed)
-python -c "$(curl -fsSL https://raw.githubusercontent.com/GizAI/arche-browser/main/arche_browser.py)"
+# One-liner (no install)
+uvx arche-browser
 ```
 
 ## Usage
 
-### Local MCP Server (stdio)
+### As MCP Server (Local)
 
-Add to your Claude Code MCP settings (`~/.claude/settings.json`):
+Add to Claude Code settings (`~/.claude/settings.json`):
 
 ```json
 {
@@ -33,15 +41,15 @@ Add to your Claude Code MCP settings (`~/.claude/settings.json`):
 }
 ```
 
-### Remote MCP Server (SSE)
+### As MCP Server (Remote)
 
-On your machine with Chrome:
+On the machine with Chrome:
 
 ```bash
 arche-browser --sse --port 8080
 ```
 
-On Claude Code (remote machine), add to MCP settings:
+On Claude Code:
 
 ```json
 {
@@ -53,23 +61,118 @@ On Claude Code (remote machine), add to MCP settings:
 }
 ```
 
-## Available Tools
+### As Python Library
 
+```python
+from arche_browser import Browser, Chrome
+
+# Start Chrome and connect
+with Chrome() as chrome:
+    b = Browser()
+    b.goto("https://example.com")
+    print(b.title)
+    b.screenshot("page.png")
+```
+
+### ChatGPT Client
+
+```python
+from arche_browser.sites import ChatGPT
+
+client = ChatGPT("localhost:9222")
+print(client.user)
+print(client.models())
+response = client.send("Tell me a joke")
+print(response)
+```
+
+## MCP Tools
+
+### Navigation
 | Tool | Description |
 |------|-------------|
-| `browser_goto(url)` | Navigate to URL |
-| `browser_url()` | Get current URL |
-| `browser_title()` | Get page title |
-| `browser_text(selector)` | Get element text |
-| `browser_html(selector)` | Get element HTML |
-| `browser_click(selector)` | Click element |
-| `browser_type(selector, text)` | Type into input |
-| `browser_wait(selector, timeout)` | Wait for element |
-| `browser_eval(script)` | Execute JavaScript |
-| `browser_screenshot(path)` | Take screenshot |
-| `browser_fetch(path, method, body)` | HTTP request via browser |
-| `browser_pages()` | List open tabs |
-| `browser_new_page(url)` | Open new tab |
+| `goto(url)` | Navigate to URL |
+| `get_url()` | Get current URL |
+| `get_title()` | Get page title |
+| `reload()` | Reload page |
+| `go_back()` | Go back in history |
+| `go_forward()` | Go forward in history |
+
+### DOM & Input
+| Tool | Description |
+|------|-------------|
+| `get_text(selector)` | Get element text |
+| `get_html(selector)` | Get element HTML |
+| `click(selector)` | Click element |
+| `type_text(selector, text)` | Type into input |
+| `select_option(selector, value)` | Select dropdown |
+| `check_box(selector, checked)` | Check/uncheck |
+| `scroll_to(x, y)` | Scroll page |
+
+### Waiting
+| Tool | Description |
+|------|-------------|
+| `wait_for(selector)` | Wait for element |
+| `wait_gone(selector)` | Wait for removal |
+| `wait_for_text(text)` | Wait for text |
+
+### Screenshots & PDF
+| Tool | Description |
+|------|-------------|
+| `screenshot(path)` | Take screenshot |
+| `pdf(path)` | Generate PDF |
+
+### Cookies & Storage
+| Tool | Description |
+|------|-------------|
+| `get_cookies()` | Get cookies |
+| `set_cookie(name, value)` | Set cookie |
+| `storage_get(key)` | Get localStorage |
+| `storage_set(key, value)` | Set localStorage |
+
+### Network
+| Tool | Description |
+|------|-------------|
+| `fetch(path, method, body)` | HTTP via browser |
+| `network_enable()` | Enable monitoring |
+| `network_requests()` | Get requests |
+
+### Emulation
+| Tool | Description |
+|------|-------------|
+| `set_viewport(w, h)` | Set viewport |
+| `set_user_agent(ua)` | Set user agent |
+| `set_geolocation(lat, lon)` | Set location |
+| `set_timezone(tz)` | Set timezone |
+| `set_offline(bool)` | Offline mode |
+| `throttle_network(down, up)` | Throttle speed |
+
+### Input Events
+| Tool | Description |
+|------|-------------|
+| `mouse_move(x, y)` | Move mouse |
+| `mouse_click(x, y)` | Click at coords |
+| `key_press(key)` | Press key |
+| `key_type(text)` | Type text |
+
+### JavaScript
+| Tool | Description |
+|------|-------------|
+| `evaluate(script)` | Execute JS |
+
+### Pages
+| Tool | Description |
+|------|-------------|
+| `get_pages()` | List tabs |
+| `new_page(url)` | Open new tab |
+| `close_page(id)` | Close tab |
+
+### Debugging
+| Tool | Description |
+|------|-------------|
+| `console_messages()` | Get console |
+| `highlight_element(sel)` | Highlight |
+| `get_performance_metrics()` | Perf metrics |
 
 ## CLI Options
 
@@ -80,46 +183,19 @@ Options:
   --sse           Run as SSE server for remote access
   --port PORT     SSE server port (default: 8080)
   --headless      Run Chrome in headless mode
-  --cdp-port PORT Chrome CDP port (default: 9222)
+  -h, --help      Show help
 ```
 
-## Examples
-
-### Web Scraping
+## Architecture
 
 ```
-User: Go to example.com and get the page title
-Claude: [Uses browser_goto, browser_title tools]
+arche_browser/
+├── chrome.py      # Chrome process management
+├── browser.py     # Full CDP browser automation
+├── server.py      # MCP server with all tools
+└── sites/
+    └── chatgpt.py # ChatGPT-specific client
 ```
-
-### Form Automation
-
-```
-User: Log into my account on site.com
-Claude: [Uses browser_goto, browser_type, browser_click tools]
-```
-
-### API Testing via Browser
-
-```
-User: Fetch data from the /api/users endpoint
-Claude: [Uses browser_fetch tool - bypasses CORS, uses cookies]
-```
-
-## How It Works
-
-1. Arche Browser launches Chrome with remote debugging enabled
-2. Connects via Chrome DevTools Protocol (CDP)
-3. Exposes browser control as MCP tools
-4. Claude Code uses these tools to automate the browser
-
-## Features
-
-- **Real Browser**: Uses your actual Chrome with your cookies, extensions, and login sessions
-- **Remote Access**: Control browser on any machine via SSE transport
-- **Full CDP Access**: Screenshots, JavaScript execution, network interception
-- **No Bot Detection**: Uses UI automation techniques that bypass detection
-- **Persistent Profile**: Browser state persists in `~/.arche-browser/profile`
 
 ## Requirements
 
