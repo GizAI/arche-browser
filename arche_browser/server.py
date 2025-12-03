@@ -797,7 +797,7 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
     """Run SSE server with authentication middleware and optional SSL."""
     import uvicorn
     from starlette.applications import Starlette
-    from starlette.routing import Route, Mount
+    from starlette.routing import Route
     from starlette.responses import JSONResponse, Response
     from starlette.requests import Request
     from starlette.types import ASGIApp, Receive, Scope, Send
@@ -856,7 +856,7 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
     # Build Starlette app with routes
     routes = [
         Route("/sse", endpoint=handle_sse, methods=["GET"]),
-        Mount("/messages", app=handle_messages),
+        Route("/messages/", endpoint=handle_messages, methods=["POST"]),
     ]
 
     async def lifespan(app):
