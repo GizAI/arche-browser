@@ -1,17 +1,31 @@
 # Arche Browser
 
-MCP Server for Browser Automation via Chrome DevTools Protocol.
+MCP Server for Browser Automation and Full Local PC Control.
 
-Control a real Chrome browser from Claude Code or any MCP client.
+Control a real Chrome browser AND your entire computer from Claude Code or any MCP client.
 
 ## Features
 
 - **Full Browser Control**: Navigation, clicks, typing, screenshots, and more
+- **Full PC Control**: Shell commands, Python execution, file system, clipboard, processes
 - **Real Browser**: Uses your actual Chrome with cookies, extensions, login sessions
-- **Remote Access**: Control browser on any machine via SSE transport
+- **Remote Access**: Control browser/PC on any machine via SSE transport
 - **Token Authentication**: Secure remote access with auto-generated tokens
-- **Site-Specific Clients**: Built-in ChatGPT client with bot detection bypass
-- **Complete CDP Access**: Cookies, storage, network, console, emulation, performance
+- **Minimal Design**: Just a few powerful primitives that can do anything
+
+## Design Philosophy
+
+Inspired by Eric Gamma's principles: **Simple, Flexible, Powerful**
+
+Instead of hundreds of specific tools, Arche provides a few powerful primitives:
+
+| Primitive | What it does | What you can achieve |
+|-----------|--------------|----------------------|
+| `shell()` | Execute any shell command | Volume, reboot, programs, services, ANYTHING |
+| `python_exec()` | Execute Python code | Camera, Excel, AI, complex logic, ANYTHING |
+| `screen_capture()` | Desktop screenshot | Visual feedback for AI |
+
+With just `shell` and `python_exec`, AI can literally control **EVERYTHING** on your computer.
 
 ## Installation
 
@@ -28,26 +42,39 @@ uvx arche-browser
 
 ## Usage
 
-### As MCP Server (Local)
-
-Add to Claude Code settings (`~/.claude/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "browser": {
-      "command": "arche-browser"
-    }
-  }
-}
-```
-
-### As MCP Server (Remote)
-
-On the machine with Chrome:
+### Browser Only (Default)
 
 ```bash
-arche-browser --sse --port 8080
+arche-browser
+```
+
+Claude Code config:
+```json
+{"mcpServers": {"browser": {"command": "arche-browser"}}}
+```
+
+### Full PC Control
+
+```bash
+arche-browser --local
+```
+
+Claude Code config:
+```json
+{"mcpServers": {"arche": {"command": "arche-browser", "args": ["--local"]}}}
+```
+
+### PC Control Only (No Browser)
+
+```bash
+arche-browser --local --no-browser
+```
+
+### Remote Access (SSE)
+
+On the machine with Chrome:
+```bash
+arche-browser --sse --port 8080 --local
 
 # Output:
 # [*] Auth: ENABLED
@@ -55,65 +82,75 @@ arche-browser --sse --port 8080
 # [*] Connect URL: http://localhost:8080/sse?token=abc123...
 ```
 
-On Claude Code (use the token from server output):
-
+On Claude Code:
 ```json
-{
-  "mcpServers": {
-    "browser": {
-      "url": "http://YOUR_IP:8080/sse?token=YOUR_TOKEN"
-    }
-  }
-}
+{"mcpServers": {"remote": {"url": "http://YOUR_IP:8080/sse?token=YOUR_TOKEN"}}}
 ```
 
-### Authentication
+## Local Control Tools
 
-Remote SSE servers are protected by token authentication by default:
+### Core Primitives
 
-```bash
-# Token is auto-generated and saved to ~/.arche-browser/token
-arche-browser --sse --port 8080
+| Tool | Description |
+|------|-------------|
+| `shell(command)` | Execute shell command (bash/cmd/powershell) |
+| `python_exec(code)` | Execute Python code with full system access |
+| `screen_capture(path)` | Capture desktop screenshot |
 
-# Show current token
-arche-browser --show-token
+### Convenience Tools
 
-# Generate new token
-arche-browser --reset-token
+| Tool | Description |
+|------|-------------|
+| `file_read(path)` | Read file content |
+| `file_write(path, content)` | Write file content |
+| `file_list(path, pattern)` | List directory contents |
+| `file_delete(path)` | Delete file or directory |
+| `file_copy(src, dst)` | Copy file or directory |
+| `file_move(src, dst)` | Move/rename file or directory |
+| `clipboard_get()` | Get clipboard content |
+| `clipboard_set(content)` | Set clipboard content |
+| `system_info()` | Get OS, CPU, memory, disk info |
+| `process_list()` | List running processes |
+| `process_kill(pid/name)` | Kill a process |
 
-# Use custom token
-arche-browser --sse --token my-secret-token
-
-# Disable auth (not recommended)
-arche-browser --sse --no-auth
-```
-
-### As Python Library
+### What You Can Do
 
 ```python
-from arche_browser import Browser, Chrome
+# Volume control (Windows)
+shell("powershell (Get-AudioDevice -Playback).SetMute($false)")
 
-# Start Chrome and connect
-with Chrome() as chrome:
-    b = Browser()
-    b.goto("https://example.com")
-    print(b.title)
-    b.screenshot("page.png")
+# Take a photo with webcam
+python_exec("""
+import cv2
+cap = cv2.VideoCapture(0)
+ret, frame = cap.read()
+cv2.imwrite("photo.jpg", frame)
+cap.release()
+""")
+
+# Create Excel spreadsheet
+python_exec("""
+import openpyxl
+wb = openpyxl.Workbook()
+ws = wb.active
+ws['A1'] = 'Sales Report'
+ws['A2'] = 1000
+wb.save('report.xlsx')
+""")
+
+# System maintenance
+shell("cleanmgr /d C:")  # Windows disk cleanup
+shell("sudo apt autoremove")  # Linux cleanup
+
+# Reboot computer
+shell("shutdown /r /t 60")  # Windows
+shell("sudo reboot")  # Linux
+
+# Kill a program
+process_kill(name="notepad.exe")
 ```
 
-### ChatGPT Client
-
-```python
-from arche_browser.sites import ChatGPT
-
-client = ChatGPT("localhost:9222")
-print(client.user)
-print(client.models())
-response = client.send("Tell me a joke")
-print(response)
-```
-
-## MCP Tools
+## Browser Tools
 
 ### Navigation
 | Tool | Description |
@@ -136,13 +173,6 @@ print(response)
 | `check_box(selector, checked)` | Check/uncheck |
 | `scroll_to(x, y)` | Scroll page |
 
-### Waiting
-| Tool | Description |
-|------|-------------|
-| `wait_for(selector)` | Wait for element |
-| `wait_gone(selector)` | Wait for removal |
-| `wait_for_text(text)` | Wait for text |
-
 ### Screenshots & PDF
 | Tool | Description |
 |------|-------------|
@@ -157,64 +187,32 @@ print(response)
 | `storage_get(key)` | Get localStorage |
 | `storage_set(key, value)` | Set localStorage |
 
-### Network
-| Tool | Description |
-|------|-------------|
-| `fetch(path, method, body)` | HTTP via browser |
-| `network_enable()` | Enable monitoring |
-| `network_requests()` | Get requests |
-
-### Emulation
-| Tool | Description |
-|------|-------------|
-| `set_viewport(w, h)` | Set viewport |
-| `set_user_agent(ua)` | Set user agent |
-| `set_geolocation(lat, lon)` | Set location |
-| `set_timezone(tz)` | Set timezone |
-| `set_offline(bool)` | Offline mode |
-| `throttle_network(down, up)` | Throttle speed |
-
-### Input Events
-| Tool | Description |
-|------|-------------|
-| `mouse_move(x, y)` | Move mouse |
-| `mouse_click(x, y)` | Click at coords |
-| `key_press(key)` | Press key |
-| `key_type(text)` | Type text |
-
 ### JavaScript
 | Tool | Description |
 |------|-------------|
 | `evaluate(script)` | Execute JS |
-
-### Pages
-| Tool | Description |
-|------|-------------|
-| `get_pages()` | List tabs |
-| `new_page(url)` | Open new tab |
-| `close_page(id)` | Close tab |
-
-### Debugging
-| Tool | Description |
-|------|-------------|
-| `console_messages()` | Get console |
-| `highlight_element(sel)` | Highlight |
-| `get_performance_metrics()` | Perf metrics |
 
 ## CLI Options
 
 ```
 arche-browser [OPTIONS]
 
-Options:
-  --sse           Run as SSE server for remote access
-  --port PORT     SSE server port (default: 8080)
-  --headless      Run Chrome in headless mode
-  --no-auth       Disable token authentication
-  --token TOKEN   Use specific auth token
-  --show-token    Show current auth token
-  --reset-token   Generate new auth token
-  -h, --help      Show help
+Mode:
+  --local          Enable full local PC control
+  --no-browser     Disable browser tools (requires --local)
+
+Transport:
+  --sse            Run as SSE server for remote access
+  --port PORT      SSE server port (default: 8080)
+
+Browser:
+  --headless       Run Chrome in headless mode
+
+Authentication:
+  --no-auth        Disable token authentication
+  --token TOKEN    Use specific auth token
+  --show-token     Show current auth token
+  --reset-token    Generate new auth token
 ```
 
 ## Architecture
@@ -227,14 +225,21 @@ arche_browser/
 ├── browser.py     # Full CDP browser automation
 ├── server.py      # MCP server with all tools
 ├── auth.py        # Token authentication
+├── local.py       # Local PC control primitives
 └── sites/
     └── chatgpt.py # ChatGPT-specific client
 ```
 
+## Security
+
+- **Token Authentication**: Remote SSE servers require authentication by default
+- **Explicit Opt-in**: Local PC control requires `--local` flag
+- **No Sandbox**: Local control has NO restrictions - use responsibly
+
 ## Requirements
 
 - Python 3.10+
-- Chrome, Chromium, or Edge browser
+- Chrome, Chromium, or Edge browser (for browser tools)
 - MCP client (Claude Code, etc.)
 
 ## License

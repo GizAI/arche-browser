@@ -47,17 +47,45 @@ def cleanup():
 atexit.register(cleanup)
 
 
-def create_server(headless: bool = False):
-    """Create MCP server with all browser tools."""
+def create_server(headless: bool = False, local_control: bool = False, browser_tools: bool = True):
+    """Create MCP server with all browser tools.
+
+    Args:
+        headless: Run Chrome in headless mode
+        local_control: Enable full local PC control (shell, python, files, etc.)
+        browser_tools: Enable browser automation tools (default: True)
+    """
     from mcp.server.fastmcp import FastMCP
 
     # Configure Chrome
     Chrome.DEFAULT_HEADLESS = headless
 
+    name = "arche-browser"
+    if local_control and not browser_tools:
+        name = "arche-local"
+    elif local_control:
+        name = "arche-full"
+
+    instructions = []
+    if browser_tools:
+        instructions.append("Browser automation via Chrome DevTools Protocol")
+    if local_control:
+        instructions.append("Full local PC control: shell commands, Python execution, file system, clipboard, processes")
+
     mcp = FastMCP(
-        name="arche-browser",
-        instructions="Browser automation via Chrome DevTools Protocol"
+        name=name,
+        instructions=". ".join(instructions)
     )
+
+    # Register local control tools if enabled
+    if local_control:
+        from .local import LocalControl, register_local_tools
+        local = LocalControl()
+        register_local_tools(mcp, local)
+
+    # Skip browser tools if disabled
+    if not browser_tools:
+        return mcp
 
     # ═══════════════════════════════════════════════════════════════
     # Navigation
@@ -473,12 +501,24 @@ def run(
     port: int = 8080,
     headless: bool = False,
     auth: bool = True,
-    token: Optional[str] = None
+    token: Optional[str] = None,
+    local_control: bool = False,
+    browser_tools: bool = True
 ):
-    """Run MCP server."""
+    """Run MCP server.
+
+    Args:
+        transport: 'stdio' or 'sse'
+        port: Port for SSE server
+        headless: Run Chrome in headless mode
+        auth: Enable token authentication for SSE
+        token: Custom auth token
+        local_control: Enable full local PC control
+        browser_tools: Enable browser automation tools
+    """
     global _auth
 
-    mcp = create_server(headless)
+    mcp = create_server(headless, local_control, browser_tools)
 
     if transport == "sse":
         if auth:
