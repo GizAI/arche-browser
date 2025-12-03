@@ -520,6 +520,16 @@ def run(
 
     mcp = create_server(headless, local_control, browser_tools)
 
+    # Start browser immediately if browser tools are enabled
+    if browser_tools:
+        print(f"[*] Starting Chrome {'(headless)' if headless else '(visible)'}...", file=sys.stderr)
+        try:
+            browser = get_browser()
+            print(f"[*] Chrome ready at localhost:{browser.cdp.address.split(':')[1]}", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] Chrome failed to start: {e}", file=sys.stderr)
+            print(f"[!] Browser tools will not be available", file=sys.stderr)
+
     if transport == "sse":
         if auth:
             _auth = TokenAuth(token)

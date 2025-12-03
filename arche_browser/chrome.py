@@ -60,16 +60,17 @@ class Chrome:
 
     DEFAULT_PORT = 9222
     DEFAULT_PROFILE = Path.home() / ".arche-browser" / "profile"
+    DEFAULT_HEADLESS = False  # Can be overridden before instantiation
 
     def __init__(
         self,
         port: int = DEFAULT_PORT,
-        headless: bool = False,
+        headless: Optional[bool] = None,
         user_data_dir: Optional[Path] = None,
         chrome_path: Optional[str] = None,
     ):
         self.port = port
-        self.headless = headless
+        self.headless = headless if headless is not None else self.DEFAULT_HEADLESS
         self.user_data_dir = user_data_dir or self.DEFAULT_PROFILE
         self.chrome_path = chrome_path or find_chrome()
         self.process: Optional[subprocess.Popen] = None
