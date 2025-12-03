@@ -748,6 +748,9 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
     from starlette.responses import JSONResponse
     from starlette.types import ASGIApp, Receive, Scope, Send
 
+    # Track authenticated sessions
+    authenticated_sessions = set()
+
     class AuthMiddleware:
         """Pure ASGI middleware for token authentication (SSE compatible)."""
 
@@ -759,10 +762,20 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
                 await self.app(scope, receive, send)
                 return
 
-            # Extract token from query params or headers
+            path = scope.get("path", "")
             from urllib.parse import parse_qs
             query_string = scope.get("query_string", b"").decode()
             query_params = parse_qs(query_string)
+
+            # Check if this is a messages endpoint with authenticated session
+            if path.startswith("/messages"):
+                session_id = query_params.get("session_id", [""])[0]
+                if session_id and session_id in authenticated_sessions:
+                    # Session was previously authenticated, allow request
+                    await self.app(scope, receive, send)
+                    return
+
+            # Extract token from query params or headers
             token = query_params.get("token", [""])[0]
 
             if not token:
@@ -777,6 +790,24 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
                     status_code=401
                 )
                 await response(scope, receive, send)
+                return
+
+            # If this is an SSE connection, track the session for future messages
+            if path == "/sse":
+                # Intercept the response to capture session_id
+                original_send = send
+
+                async def track_session_send(message):
+                    if message.get("type") == "http.response.body":
+                        body = message.get("body", b"").decode()
+                        if "session_id=" in body:
+                            import re
+                            match = re.search(r"session_id=([a-f0-9]+)", body)
+                            if match:
+                                authenticated_sessions.add(match.group(1))
+                    await original_send(message)
+
+                await self.app(scope, receive, track_session_send)
                 return
 
             await self.app(scope, receive, send)
