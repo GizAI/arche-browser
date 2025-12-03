@@ -748,7 +748,7 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
     from starlette.responses import JSONResponse
     from starlette.types import ASGIApp, Receive, Scope, Send
 
-    # Track authenticated sessions
+    # Track authenticated sessions (session_id -> True)
     authenticated_sessions = set()
 
     class AuthMiddleware:
@@ -766,11 +766,11 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
             from urllib.parse import parse_qs
             query_string = scope.get("query_string", b"").decode()
             query_params = parse_qs(query_string)
+            session_id = query_params.get("session_id", [""])[0]
 
             # Check if this is a messages endpoint with authenticated session
-            if path.startswith("/messages"):
-                session_id = query_params.get("session_id", [""])[0]
-                if session_id and session_id in authenticated_sessions:
+            if path.startswith("/messages") and session_id:
+                if session_id in authenticated_sessions:
                     # Session was previously authenticated, allow request
                     await self.app(scope, receive, send)
                     return
@@ -792,23 +792,9 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
                 await response(scope, receive, send)
                 return
 
-            # If this is an SSE connection, track the session for future messages
-            if path == "/sse":
-                # Intercept the response to capture session_id
-                original_send = send
-
-                async def track_session_send(message):
-                    if message.get("type") == "http.response.body":
-                        body = message.get("body", b"").decode()
-                        if "session_id=" in body:
-                            import re
-                            match = re.search(r"session_id=([a-f0-9]+)", body)
-                            if match:
-                                authenticated_sessions.add(match.group(1))
-                    await original_send(message)
-
-                await self.app(scope, receive, track_session_send)
-                return
+            # If authenticated and has session_id, track it
+            if session_id:
+                authenticated_sessions.add(session_id)
 
             await self.app(scope, receive, send)
 
