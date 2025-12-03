@@ -12,6 +12,7 @@ import argparse
 import sys
 
 from .server import run
+from .auth import TokenAuth
 
 
 def main():
@@ -21,15 +22,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  arche-browser                    # Run as stdio MCP server
-  arche-browser --sse --port 8080  # Run as SSE server for remote
-  arche-browser --headless         # Run Chrome headless
+  arche-browser                      # Run as stdio MCP server
+  arche-browser --sse --port 8080    # Run as SSE server (with auth)
+  arche-browser --sse --no-auth      # Run SSE without auth (not recommended)
+  arche-browser --headless           # Run Chrome headless
+  arche-browser --reset-token        # Generate new auth token
 
-Local MCP (add to Claude Code settings):
+Local MCP (Claude Code settings):
   {"command": "arche-browser"}
 
-Remote MCP (add to Claude Code settings):
-  {"url": "http://YOUR_IP:8080/sse"}
+Remote MCP with auth (Claude Code settings):
+  {"url": "http://HOST:8080/sse?token=YOUR_TOKEN"}
         """
     )
 
@@ -49,11 +52,54 @@ Remote MCP (add to Claude Code settings):
         action="store_true",
         help="Run Chrome in headless mode"
     )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable authentication (not recommended for remote)"
+    )
+    parser.add_argument(
+        "--token",
+        type=str,
+        default=None,
+        help="Use specific auth token instead of auto-generated"
+    )
+    parser.add_argument(
+        "--reset-token",
+        action="store_true",
+        help="Generate new auth token and exit"
+    )
+    parser.add_argument(
+        "--show-token",
+        action="store_true",
+        help="Show current auth token and exit"
+    )
 
     args = parser.parse_args()
 
+    # Token management commands
+    if args.reset_token:
+        token = TokenAuth.reset()
+        print(f"New token: {token}")
+        print(f"Saved to: {TokenAuth.TOKEN_FILE}")
+        return
+
+    if args.show_token:
+        token = TokenAuth.load()
+        if token:
+            print(f"Token: {token}")
+            print(f"File: {TokenAuth.TOKEN_FILE}")
+        else:
+            print("No token found. Run with --sse to generate one.")
+        return
+
     transport = "sse" if args.sse else "stdio"
-    run(transport=transport, port=args.port, headless=args.headless)
+    run(
+        transport=transport,
+        port=args.port,
+        headless=args.headless,
+        auth=not args.no_auth,
+        token=args.token
+    )
 
 
 if __name__ == "__main__":

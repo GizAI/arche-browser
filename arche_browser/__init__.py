@@ -20,6 +20,7 @@ Quick Start:
 from .chrome import Chrome, find_chrome
 from .browser import Browser, CDP
 from .server import create_server, run
+from .auth import TokenAuth
 
 __version__ = "1.0.0"
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "CDP",
     "create_server",
     "run",
+    "TokenAuth",
 ]

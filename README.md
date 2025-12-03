@@ -9,6 +9,7 @@ Control a real Chrome browser from Claude Code or any MCP client.
 - **Full Browser Control**: Navigation, clicks, typing, screenshots, and more
 - **Real Browser**: Uses your actual Chrome with cookies, extensions, login sessions
 - **Remote Access**: Control browser on any machine via SSE transport
+- **Token Authentication**: Secure remote access with auto-generated tokens
 - **Site-Specific Clients**: Built-in ChatGPT client with bot detection bypass
 - **Complete CDP Access**: Cookies, storage, network, console, emulation, performance
 
@@ -47,18 +48,44 @@ On the machine with Chrome:
 
 ```bash
 arche-browser --sse --port 8080
+
+# Output:
+# [*] Auth: ENABLED
+# [*] Token: abc123...
+# [*] Connect URL: http://localhost:8080/sse?token=abc123...
 ```
 
-On Claude Code:
+On Claude Code (use the token from server output):
 
 ```json
 {
   "mcpServers": {
     "browser": {
-      "url": "http://YOUR_IP:8080/sse"
+      "url": "http://YOUR_IP:8080/sse?token=YOUR_TOKEN"
     }
   }
 }
+```
+
+### Authentication
+
+Remote SSE servers are protected by token authentication by default:
+
+```bash
+# Token is auto-generated and saved to ~/.arche-browser/token
+arche-browser --sse --port 8080
+
+# Show current token
+arche-browser --show-token
+
+# Generate new token
+arche-browser --reset-token
+
+# Use custom token
+arche-browser --sse --token my-secret-token
+
+# Disable auth (not recommended)
+arche-browser --sse --no-auth
 ```
 
 ### As Python Library
@@ -183,6 +210,10 @@ Options:
   --sse           Run as SSE server for remote access
   --port PORT     SSE server port (default: 8080)
   --headless      Run Chrome in headless mode
+  --no-auth       Disable token authentication
+  --token TOKEN   Use specific auth token
+  --show-token    Show current auth token
+  --reset-token   Generate new auth token
   -h, --help      Show help
 ```
 
@@ -190,9 +221,12 @@ Options:
 
 ```
 arche_browser/
+├── __init__.py    # Package exports
+├── __main__.py    # CLI entry point
 ├── chrome.py      # Chrome process management
 ├── browser.py     # Full CDP browser automation
 ├── server.py      # MCP server with all tools
+├── auth.py        # Token authentication
 └── sites/
     └── chatgpt.py # ChatGPT-specific client
 ```

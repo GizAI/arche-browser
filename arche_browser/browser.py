@@ -41,15 +41,32 @@ class CDP:
 
         pages = requests.get(f"http://{self.address}/json/list", timeout=10).json()
 
-        # Find matching page
+        # Find matching page (skip extensions and devtools)
         page = None
         for p in pages:
             url = p.get("url", "")
+            ptype = p.get("type", "")
+
+            # Skip non-page types
+            if ptype != "page":
+                continue
+            # Skip extensions and devtools
+            if url.startswith("chrome-extension://") or url.startswith("devtools://"):
+                continue
+
             if page_filter and page_filter(url):
                 page = p
                 break
+            elif not page_filter:
+                page = p
+                break
+
+        # Fallback to first page if no regular page found
         if not page and pages:
-            page = pages[0]
+            for p in pages:
+                if p.get("type") == "page":
+                    page = p
+                    break
 
         if not page:
             raise ConnectionError("No browser page found")

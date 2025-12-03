@@ -11,11 +11,13 @@ from typing import Any, Dict, List, Optional
 
 from .chrome import Chrome
 from .browser import Browser
+from .auth import TokenAuth, create_auth_middleware
 
 
 # Global state
 _chrome: Optional[Chrome] = None
 _browser: Optional[Browser] = None
+_auth: Optional[TokenAuth] = None
 
 
 def get_browser() -> Browser:
@@ -53,8 +55,8 @@ def create_server(headless: bool = False):
     Chrome.DEFAULT_HEADLESS = headless
 
     mcp = FastMCP(
-        "arche-browser",
-        description="Browser automation via Chrome DevTools Protocol"
+        name="arche-browser",
+        instructions="Browser automation via Chrome DevTools Protocol"
     )
 
     # ═══════════════════════════════════════════════════════════════
@@ -466,16 +468,75 @@ def create_server(headless: bool = False):
     return mcp
 
 
-def run(transport: str = "stdio", port: int = 8080, headless: bool = False):
+def run(
+    transport: str = "stdio",
+    port: int = 8080,
+    headless: bool = False,
+    auth: bool = True,
+    token: Optional[str] = None
+):
     """Run MCP server."""
+    global _auth
+
     mcp = create_server(headless)
 
     if transport == "sse":
-        print(f"[*] Arche Browser MCP Server (SSE)", file=sys.stderr)
-        print(f"[*] Port: {port}", file=sys.stderr)
-        print(f"[*] URL: http://localhost:{port}/sse", file=sys.stderr)
-        mcp.settings.port = port
-        mcp.run(transport="sse")
+        if auth:
+            _auth = TokenAuth(token)
+            auth_token = _auth.token
+
+            print(f"[*] Arche Browser MCP Server (SSE)", file=sys.stderr)
+            print(f"[*] Port: {port}", file=sys.stderr)
+            print(f"[*] Auth: ENABLED", file=sys.stderr)
+            print(f"[*] Token: {auth_token}", file=sys.stderr)
+            print(f"", file=sys.stderr)
+            print(f"[*] Connect URL:", file=sys.stderr)
+            print(f"    http://localhost:{port}/sse?token={auth_token}", file=sys.stderr)
+            print(f"", file=sys.stderr)
+            print(f"[*] Claude Code MCP config:", file=sys.stderr)
+            print(f'    {{"url": "http://HOST:{port}/sse?token={auth_token}"}}', file=sys.stderr)
+
+            # Run with auth middleware
+            run_sse_with_auth(mcp, port, _auth)
+        else:
+            print(f"[*] Arche Browser MCP Server (SSE)", file=sys.stderr)
+            print(f"[*] Port: {port}", file=sys.stderr)
+            print(f"[*] Auth: DISABLED (not recommended)", file=sys.stderr)
+            print(f"[*] URL: http://localhost:{port}/sse", file=sys.stderr)
+            mcp.settings.port = port
+            mcp.run(transport="sse")
     else:
         print("[*] Arche Browser MCP Server (stdio)", file=sys.stderr)
         mcp.run()
+
+
+def run_sse_with_auth(mcp, port: int, auth: TokenAuth):
+    """Run SSE server with authentication middleware."""
+    import uvicorn
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
+
+    class AuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            # Check token from query param or header
+            token = request.query_params.get("token", "")
+            if not token:
+                auth_header = request.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    token = auth_header[7:]
+
+            if not auth.verify(token):
+                return JSONResponse(
+                    {"error": "Unauthorized - Invalid or missing token"},
+                    status_code=401
+                )
+
+            return await call_next(request)
+
+    # Get the SSE app from FastMCP and add auth middleware
+    mcp.settings.host = "0.0.0.0"
+    mcp.settings.port = port
+    app = mcp.sse_app()
+    app.add_middleware(AuthMiddleware)
+
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
