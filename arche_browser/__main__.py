@@ -2,11 +2,10 @@
 CLI entry point for arche-browser.
 
 Usage:
-    python -m arche_browser
-    arche-browser
-    arche-browser --sse --port 8080
-    arche-browser --headless
-    arche-browser --local  # Full local PC control
+    arche-browser                    # SSE server on port 8080 (default)
+    arche-browser --local            # With full PC control
+    arche-browser --stdio            # For MCP clients (Claude Code)
+    arche-browser --headless         # Hide browser window
 """
 
 import argparse
@@ -23,19 +22,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  arche-browser                         # Browser automation only
-  arche-browser --local                 # Browser + full PC control
-  arche-browser --local --no-browser    # PC control only (no browser)
-  arche-browser --sse --port 8080       # Remote SSE server (with auth)
-  arche-browser --sse --local           # Remote with PC control
-  arche-browser --headless              # Run Chrome headless
+  arche-browser                       # Start SSE server (default)
+  arche-browser --local               # With full PC control
+  arche-browser --port 9000           # Custom port
+  arche-browser --headless            # Hide browser window
+  arche-browser --no-auth             # Disable token auth (dev only)
+  arche-browser --stdio               # For MCP clients (Claude Code)
 
-Local MCP config:
-  {"command": "arche-browser"}
-  {"command": "arche-browser", "args": ["--local"]}
+For Claude Code (~/.claude/settings.json):
+  {"mcpServers": {"arche": {"command": "arche-browser", "args": ["--stdio"]}}}
+  {"mcpServers": {"arche": {"command": "arche-browser", "args": ["--stdio", "--local"]}}}
 
-Remote MCP config:
-  {"url": "http://HOST:8080/sse?token=YOUR_TOKEN"}
+For remote access:
+  {"mcpServers": {"arche": {"url": "http://HOST:8080/sse?token=YOUR_TOKEN"}}}
 
 Local Control Tools (--local):
   shell         Execute shell commands (bash/cmd/powershell)
@@ -45,12 +44,6 @@ Local Control Tools (--local):
   clipboard_*   Clipboard access
   system_info   System information
   process_*     Process management
-
-With just 'shell' and 'python_exec', AI can control EVERYTHING:
-  - Volume, camera, microphone
-  - Excel, PowerPoint, any application
-  - System maintenance, cleanup, optimization
-  - Literally anything a human can do
         """
     )
 
@@ -66,11 +59,11 @@ With just 'shell' and 'python_exec', AI can control EVERYTHING:
         help="Disable browser tools (use with --local for PC-only control)"
     )
 
-    # Transport
+    # Transport - stdio is opt-in now, SSE is default
     parser.add_argument(
-        "--sse",
+        "--stdio",
         action="store_true",
-        help="Run as SSE server for remote access"
+        help="Use stdio transport (for MCP clients like Claude Code)"
     )
     parser.add_argument(
         "--port",
@@ -83,20 +76,20 @@ With just 'shell' and 'python_exec', AI can control EVERYTHING:
     parser.add_argument(
         "--headless",
         action="store_true",
-        help="Run Chrome in headless mode"
+        help="Run Chrome in headless mode (no visible window)"
     )
 
     # Authentication
     parser.add_argument(
         "--no-auth",
         action="store_true",
-        help="Disable authentication (not recommended for remote)"
+        help="Disable token authentication (not recommended)"
     )
     parser.add_argument(
         "--token",
         type=str,
         default=None,
-        help="Use specific auth token instead of auto-generated"
+        help="Use specific auth token"
     )
     parser.add_argument(
         "--reset-token",
@@ -124,7 +117,7 @@ With just 'shell' and 'python_exec', AI can control EVERYTHING:
             print(f"Token: {token}")
             print(f"File: {TokenAuth.TOKEN_FILE}")
         else:
-            print("No token found. Run with --sse to generate one.")
+            print("No token found. Run arche-browser to generate one.")
         return
 
     # Validate options
@@ -133,7 +126,9 @@ With just 'shell' and 'python_exec', AI can control EVERYTHING:
         print("Error: --no-browser requires --local", file=sys.stderr)
         sys.exit(1)
 
-    transport = "sse" if args.sse else "stdio"
+    # SSE is default, stdio is opt-in
+    transport = "stdio" if args.stdio else "sse"
+
     run(
         transport=transport,
         port=args.port,

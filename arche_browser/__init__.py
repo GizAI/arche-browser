@@ -37,7 +37,7 @@ from .server import create_server, run
 from .auth import TokenAuth
 from .local import LocalControl
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __all__ = [
     "Chrome",
     "find_chrome",
