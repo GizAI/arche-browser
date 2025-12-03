@@ -26,15 +26,32 @@ _auth: Optional[TokenAuth] = None
 
 
 def get_browser() -> Browser:
-    """Get or create browser instance (thread-safe)."""
+    """Get or create browser instance (thread-safe).
+
+    Automatically restarts Chrome if it was closed.
+    """
     global _chrome, _browser
 
     with _lock:
-        if _browser is None or _browser.cdp._ws is None:
+        # Check if Chrome process died
+        if _chrome is not None and not _chrome.running:
+            print("[*] Chrome process died, restarting...", file=sys.stderr)
+            _browser = None
+            _chrome = None
+
+        # Check if WebSocket connection is dead
+        if _browser is not None and _browser.cdp._ws is None:
+            print("[*] Browser connection lost, reconnecting...", file=sys.stderr)
+            _browser = None
+
+        # Start Chrome and connect browser
+        if _browser is None:
             if _chrome is None:
                 _chrome = Chrome()
                 _chrome.start()
+                print(f"[*] Chrome started on port {_chrome.port}", file=sys.stderr)
             _browser = Browser(f"localhost:{_chrome.port}")
+            print("[*] Browser connected", file=sys.stderr)
 
     return _browser
 
