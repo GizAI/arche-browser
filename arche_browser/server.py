@@ -229,10 +229,15 @@ def create_server(headless: bool = False, local_control: bool = False, browser_t
     # ═══════════════════════════════════════════════════════════════
 
     @mcp.tool()
-    def goto(url: str) -> str:
-        """Navigate to URL. Returns final URL."""
+    def goto(url: str, wait: bool = False) -> str:
+        """Navigate to URL. Returns final URL.
+
+        Args:
+            url: Target URL to navigate to
+            wait: Wait for page load (default: False for SSE stability)
+        """
         b = get_browser()
-        b.goto(url)
+        b.goto(url, wait=wait)
         return b.url
 
     @mcp.tool()
