@@ -6,6 +6,7 @@ Usage:
     arche-browser --local            # With full PC control
     arche-browser --stdio            # For MCP clients (Claude Code)
     arche-browser --headless         # Hide browser window
+    arche-browser --no-launch        # Don't start Chrome (manual mode)
 """
 
 import argparse
@@ -26,7 +27,7 @@ Examples:
   arche-browser --local               # With full PC control
   arche-browser --port 9000           # Custom port
   arche-browser --headless            # Hide browser window
-  arche-browser --no-auth             # Disable token auth (dev only)
+  arche-browser --no-launch           # Don't start Chrome (connect to existing)
   arche-browser --stdio               # For MCP clients (Claude Code)
 
 For Claude Code (~/.claude/settings.json):
@@ -35,15 +36,6 @@ For Claude Code (~/.claude/settings.json):
 
 For remote access:
   {"mcpServers": {"arche": {"url": "http://HOST:8080/sse?token=YOUR_TOKEN"}}}
-
-Local Control Tools (--local):
-  shell         Execute shell commands (bash/cmd/powershell)
-  python_exec   Execute Python code with full system access
-  screen_capture  Desktop screenshot
-  file_*        File operations (read, write, list, delete, copy, move)
-  clipboard_*   Clipboard access
-  system_info   System information
-  process_*     Process management
         """
     )
 
@@ -77,6 +69,17 @@ Local Control Tools (--local):
         "--headless",
         action="store_true",
         help="Run Chrome in headless mode (no visible window)"
+    )
+    parser.add_argument(
+        "--no-launch",
+        action="store_true",
+        help="Don't launch Chrome automatically (connect to existing browser)"
+    )
+    parser.add_argument(
+        "--chrome-port",
+        type=int,
+        default=9222,
+        help="Chrome debugging port (default: 9222)"
     )
 
     # Authentication
@@ -136,7 +139,9 @@ Local Control Tools (--local):
         auth=not args.no_auth,
         token=args.token,
         local_control=args.local,
-        browser_tools=browser_tools
+        browser_tools=browser_tools,
+        no_launch=args.no_launch,
+        chrome_port=args.chrome_port
     )
 
 

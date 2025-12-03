@@ -503,7 +503,9 @@ def run(
     auth: bool = True,
     token: Optional[str] = None,
     local_control: bool = False,
-    browser_tools: bool = True
+    browser_tools: bool = True,
+    no_launch: bool = False,
+    chrome_port: int = 9222
 ):
     """Run MCP server.
 
@@ -515,20 +517,41 @@ def run(
         token: Custom auth token
         local_control: Enable full local PC control
         browser_tools: Enable browser automation tools
+        no_launch: Don't launch Chrome (connect to existing)
+        chrome_port: Chrome debugging port
     """
-    global _auth
+    global _auth, _chrome
+
+    # Set Chrome port
+    Chrome.DEFAULT_PORT = chrome_port
 
     mcp = create_server(headless, local_control, browser_tools)
 
     # Start browser immediately if browser tools are enabled
     if browser_tools:
-        print(f"[*] Starting Chrome {'(headless)' if headless else '(visible)'}...", file=sys.stderr)
-        try:
-            browser = get_browser()
-            print(f"[*] Chrome ready at localhost:{browser.cdp.address.split(':')[1]}", file=sys.stderr)
-        except Exception as e:
-            print(f"[!] Chrome failed to start: {e}", file=sys.stderr)
-            print(f"[!] Browser tools will not be available", file=sys.stderr)
+        if no_launch:
+            # Manual mode - print instructions
+            print(f"[*] Manual browser mode - Chrome will NOT be launched automatically", file=sys.stderr)
+            print(f"[*] Start Chrome manually with remote debugging:", file=sys.stderr)
+            print(f"", file=sys.stderr)
+            print(f"    Windows:", file=sys.stderr)
+            print(f'    chrome.exe --remote-debugging-port={chrome_port} --remote-allow-origins=*', file=sys.stderr)
+            print(f"", file=sys.stderr)
+            print(f"    Mac:", file=sys.stderr)
+            print(f'    /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port={chrome_port} --remote-allow-origins=*', file=sys.stderr)
+            print(f"", file=sys.stderr)
+            print(f"    Linux:", file=sys.stderr)
+            print(f'    google-chrome --remote-debugging-port={chrome_port} --remote-allow-origins=*', file=sys.stderr)
+            print(f"", file=sys.stderr)
+            print(f"[*] Waiting for Chrome on port {chrome_port}...", file=sys.stderr)
+        else:
+            print(f"[*] Starting Chrome {'(headless)' if headless else '(visible)'}...", file=sys.stderr)
+            try:
+                browser = get_browser()
+                print(f"[*] Chrome ready at localhost:{browser.cdp.address.split(':')[1]}", file=sys.stderr)
+            except Exception as e:
+                print(f"[!] Chrome failed to start: {e}", file=sys.stderr)
+                print(f"[!] Browser tools will not be available", file=sys.stderr)
 
     if transport == "sse":
         if auth:
