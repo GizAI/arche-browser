@@ -738,6 +738,7 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
     """Run SSE server with authentication middleware and optional SSL."""
     import uvicorn
     from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
     from starlette.responses import JSONResponse
 
     class AuthMiddleware(BaseHTTPMiddleware):
@@ -757,10 +758,13 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
 
             return await call_next(request)
 
-    # Get the SSE app from FastMCP and add auth middleware
+    # Get the SSE app from FastMCP and add middleware
     mcp.settings.host = "0.0.0.0"
     mcp.settings.port = port
     app = mcp.sse_app()
+
+    # Allow all hosts for remote access (token auth provides security)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
     app.add_middleware(AuthMiddleware)
 
     # Configure uvicorn with optional SSL
