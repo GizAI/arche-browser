@@ -168,6 +168,7 @@ def create_server(headless: bool = False, local_control: bool = False, browser_t
         browser_tools: Enable browser automation tools (default: True)
     """
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
 
     # Configure Chrome
     Chrome.DEFAULT_HEADLESS = headless
@@ -184,9 +185,16 @@ def create_server(headless: bool = False, local_control: bool = False, browser_t
     if local_control:
         instructions.append("Full local PC control: shell commands, Python execution, file system, clipboard, processes")
 
+    # Disable DNS rebinding protection to allow remote access
+    # Token authentication provides security for remote access
+    security_settings = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    )
+
     mcp = FastMCP(
         name=name,
-        instructions=". ".join(instructions)
+        instructions=". ".join(instructions),
+        transport_security=security_settings
     )
 
     # Register local control tools if enabled
