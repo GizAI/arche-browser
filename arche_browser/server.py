@@ -748,8 +748,9 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
     from starlette.responses import JSONResponse
     from starlette.types import ASGIApp, Receive, Scope, Send
 
-    # Track authenticated sessions (session_id -> True)
-    authenticated_sessions = set()
+    import re
+    # UUID pattern for session validation
+    SESSION_ID_PATTERN = re.compile(r'^[a-f0-9]{32}$')
 
     class AuthMiddleware:
         """Pure ASGI middleware for token authentication (SSE compatible)."""
@@ -766,16 +767,17 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
             from urllib.parse import parse_qs
             query_string = scope.get("query_string", b"").decode()
             query_params = parse_qs(query_string)
-            session_id = query_params.get("session_id", [""])[0]
 
-            # Check if this is a messages endpoint with authenticated session
-            if path.startswith("/messages") and session_id:
-                if session_id in authenticated_sessions:
-                    # Session was previously authenticated, allow request
+            # Allow /messages with valid session_id format
+            # Session IDs are cryptographically random UUIDs from FastMCP
+            # Only clients who connected to authenticated /sse can get session IDs
+            if path.startswith("/messages"):
+                session_id = query_params.get("session_id", [""])[0]
+                if session_id and SESSION_ID_PATTERN.match(session_id):
                     await self.app(scope, receive, send)
                     return
 
-            # Extract token from query params or headers
+            # For other endpoints (like /sse), require token auth
             token = query_params.get("token", [""])[0]
 
             if not token:
@@ -791,10 +793,6 @@ def run_sse_with_auth(mcp, port: int, auth: TokenAuth,
                 )
                 await response(scope, receive, send)
                 return
-
-            # If authenticated and has session_id, track it
-            if session_id:
-                authenticated_sessions.add(session_id)
 
             await self.app(scope, receive, send)
 
