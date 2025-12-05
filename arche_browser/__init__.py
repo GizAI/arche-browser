@@ -36,15 +36,56 @@ from .browser import Browser, CDP
 from .server import create_server, run
 from .auth import TokenAuth
 from .local import LocalControl
+from .snapshot import Snapshot, SnapshotManager, SnapshotNode
+from .history import BrowserHistory, HistoryItem, VisitItem
+from .response import Response, ResponseBuilder
+from .wait import WaitForHelper, WaitConfig
+from .collector import NetworkCollector, ConsoleCollector, NetworkRequest, ConsoleMessage, Issue
+from .trace import PerformanceTrace, TraceResult, WebVitals
+from .devtools import DevToolsIntegration, DevToolsContext, DevToolsState
+from .context import BrowserContext
 
-__version__ = "1.3.0"
+__version__ = "2.2.0"
 __all__ = [
+    # Core
     "Chrome",
     "find_chrome",
     "Browser",
     "CDP",
+    # Server
     "create_server",
     "run",
     "TokenAuth",
+    # Local control
     "LocalControl",
+    # Snapshot
+    "Snapshot",
+    "SnapshotManager",
+    "SnapshotNode",
+    # History
+    "BrowserHistory",
+    "HistoryItem",
+    "VisitItem",
+    # Response
+    "Response",
+    "ResponseBuilder",
+    # Wait
+    "WaitForHelper",
+    "WaitConfig",
+    # Collector
+    "NetworkCollector",
+    "ConsoleCollector",
+    "NetworkRequest",
+    "ConsoleMessage",
+    "Issue",
+    # Trace
+    "PerformanceTrace",
+    "TraceResult",
+    "WebVitals",
+    # DevTools
+    "DevToolsIntegration",
+    "DevToolsContext",
+    "DevToolsState",
+    # Context
+    "BrowserContext",
 ]

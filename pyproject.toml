@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arche-browser"
-version = "1.4.0"
+version = "2.2.0"
 description = "MCP Server for Browser Automation and Local PC Control"
 readme = "README.md"
 license = {text = "MIT"}
